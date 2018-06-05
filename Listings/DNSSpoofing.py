@@ -94,7 +94,7 @@ Craft a DNS response and send it back.
 """
 def parsePacket(packet):
     global redirectIP
-    if packet.haslayer(DNS) and DNSQR in packet:
+    if packet.haslayer(DNS) and packet.getlayer(DNS).qr == 0:
         response = (IP(dst=packet[IP].src, src=packet[IP].dst)/\
                     UDP(dport=packet[UDP].sport, sport=packet[UDP].dport)/\
                     DNS(id=packet[DNS].id, qd=packet[DNS].qd, aa=1, qr=1, \
