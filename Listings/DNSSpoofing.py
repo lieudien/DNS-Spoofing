@@ -1,5 +1,20 @@
 #!/usr/bin/python3
 
+"""
+Assignment 4: DNS Spoofing Application
+
+Date: June 05, 2018
+
+Programmer: DANNY LIEU
+
+Student ID: A00831407
+
+Description: the application will send APR packet to both the router and the victim
+in order to do APR poisoing. After that, the application will sense for DNS query and
+craft DNS response which will lead the victim to the website that hosts on either
+attacker machine or the redirected machine.
+"""
+
 import subprocess, os
 import threading
 from scapy.all import *
